@@ -20,7 +20,6 @@ import typing
 import warnings
 import weakref
 
-from . import compat
 from . import connect_utils
 from . import cursor
 from . import exceptions
@@ -30,7 +29,6 @@ from . import protocol
 from . import serverversion
 from . import transaction
 from . import utils
-from .connect_utils import SessionAttribute
 
 
 class ConnectionMeta(type):
@@ -1418,6 +1416,7 @@ class Connection(metaclass=ConnectionMeta):
     def _maybe_gc_stmt(self, stmt):
         if (
             stmt.refs == 0
+            and stmt.name
             and not self._stmt_cache.has(
                 (stmt.query, stmt.record_class, stmt.ignore_custom_codec)
             )
@@ -1469,7 +1468,7 @@ class Connection(metaclass=ConnectionMeta):
                 waiter.set_exception(ex)
         finally:
             self._cancellations.discard(
-                compat.current_asyncio_task(self._loop))
+                asyncio.current_task(self._loop))
             if not waiter.done():
                 waiter.set_result(None)
 
@@ -1794,7 +1793,7 @@ async def connect(dsn=None, *,
                   connection_class=Connection,
                   record_class=protocol.Record,
                   server_settings=None,
-                  target_session_attribute=SessionAttribute.any):
+                  target_session_attrs=None):
     r"""A coroutine to establish a connection to a PostgreSQL server.
 
     The connection parameters may be specified either as a connection
@@ -2005,15 +2004,21 @@ async def connect(dsn=None, *,
         this connection object.  Must be a subclass of
         :class:`~asyncpg.Record`.
 
-    :param SessionAttribute target_session_attribute:
+    :param SessionAttribute target_session_attrs:
         If specified, check that the host has the correct attribute.
         Can be one of:
             "any": the first successfully connected host
             "primary": the host must NOT be in hot standby mode
             "standby": the host must be in hot standby mode
+            "read-write": the host must allow writes
+            "read-only": the host most NOT allow writes
             "prefer-standby": first try to find a standby host, but if
                             none of the listed hosts is a standby server,
                             return any of them.
+
+        If not specified will try to use PGTARGETSESSIONATTRS
+        from the environment.
+        Defaults to "any" if no value is set.
 
     :return: A :class:`~asyncpg.connection.Connection` instance.
 
@@ -2099,15 +2104,6 @@ async def connect(dsn=None, *,
     if record_class is not protocol.Record:
         _check_record_class(record_class)
 
-    try:
-        target_session_attribute = SessionAttribute(target_session_attribute)
-    except ValueError as exc:
-        raise exceptions.InterfaceError(
-            "target_session_attribute is expected to be one of "
-            "'any', 'primary', 'standby' or 'prefer-standby'"
-            ", got {!r}".format(target_session_attribute)
-        ) from exc
-
     if loop is None:
         loop = asyncio.get_event_loop()
 
@@ -2130,7 +2126,7 @@ async def connect(dsn=None, *,
         statement_cache_size=statement_cache_size,
         max_cached_statement_lifetime=max_cached_statement_lifetime,
         max_cacheable_statement_size=max_cacheable_statement_size,
-        target_session_attribute=target_session_attribute
+        target_session_attrs=target_session_attrs
     )
 
 
